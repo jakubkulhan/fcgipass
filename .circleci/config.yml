@@ -23,10 +23,20 @@ jobs:
     - setup_remote_docker
     - run:
         command: |
-          export DOCKER_TAG=$(echo $CIRCLE_TAG | sed 's/^v//')
+          set -ex
+
+          DOCKER_TAG=$(echo $CIRCLE_TAG | sed 's/^v//')
           docker login --username $DOCKER_USERNAME --password $DOCKER_PASSWORD
           docker build -t jakubkulhan/fcgipass:$DOCKER_TAG .
           docker push jakubkulhan/fcgipass:$DOCKER_TAG
+
+          container_id=$(docker create jakubkulhan/fcgipass:$DOCKER_TAG)
+          docker cp $container_id:/fcgipass .
+          docker rm $container_id
+
+          github_release=$(curl -u "jakubkulhan:$GITHUB_TOKEN" https://api.github.com/repos/jakubkulhan/fcgipass/releases -X POST -d '{"tag_name":"'$CIRCLE_TAG'","name":"'$CIRCLE_TAG'"}')
+          github_release_id=$(echo "$github_release" | python -c 'import json,sys;print(json.load(sys.stdin)["id"])')
+          curl --user "jakubkulhan:$GITHUB_TOKEN" -X POST https://uploads.github.com/repos/jakubkulhan/fcgipass/releases/${github_release_id}/assets?name=fcgipass --header 'Content-Type: application/octet-stream' --upload-file ./fcgipass
 
 workflows:
   version: 2
