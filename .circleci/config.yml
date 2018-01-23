@@ -1,0 +1,18 @@
+version: 2
+jobs:
+  build_docker:
+    docker:
+    - image: circleci/golang
+    working_directory: /go/src/github.com/jakubkulhan/fcgipass
+    steps:
+    - checkout
+    - run:
+        command: |
+          docker build -t jakubkulhan/fcgipass:latest .
+
+workflows:
+  version: 2
+
+  build:
+    jobs:
+    - build_docker
