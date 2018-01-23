@@ -1,6 +1,7 @@
 version: 2
 jobs:
-  build_docker:
+
+  build:
     docker:
     - image: circleci/golang
     working_directory: /go/src/github.com/jakubkulhan/fcgipass
@@ -13,9 +14,29 @@ jobs:
           docker build -t jakubkulhan/fcgipass:latest .
           docker push jakubkulhan/fcgipass:latest
 
+  build_tag:
+    docker:
+    - image: circleci/golang
+    working_directory: /go/src/github.com/jakubkulhan/fcgipass
+    steps:
+    - checkout
+    - setup_remote_docker
+    - run:
+        command: |
+          export DOCKER_TAG=$(echo $CIRCLE_TAG | sed 's/^v//')
+          docker login --username $DOCKER_USERNAME --password $DOCKER_PASSWORD
+          docker build -t jakubkulhan/fcgipass:$DOCKER_TAG .
+          docker push jakubkulhan/fcgipass:$DOCKER_TAG
+
 workflows:
   version: 2
 
-  build:
+  wf:
     jobs:
-    - build_docker
+    - build
+    - build_tag:
+        filters:
+          branches:
+            ignore: /.*/
+          tags:
+            only: /^v.*/
