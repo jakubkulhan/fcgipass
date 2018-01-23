@@ -23,8 +23,6 @@ jobs:
     - setup_remote_docker
     - run:
         command: |
-          set -ex
-
           DOCKER_TAG=$(echo $CIRCLE_TAG | sed 's/^v//')
           docker login --username $DOCKER_USERNAME --password $DOCKER_PASSWORD
           docker build -t jakubkulhan/fcgipass:$DOCKER_TAG .
