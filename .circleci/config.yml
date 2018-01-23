@@ -6,9 +6,12 @@ jobs:
     working_directory: /go/src/github.com/jakubkulhan/fcgipass
     steps:
     - checkout
+    - setup_remote_docker
     - run:
         command: |
+          docker login --username $DOCKER_USERNAME --password $DOCKER_PASSWORD
           docker build -t jakubkulhan/fcgipass:latest .
+          docker push jakubkulhan/fcgipass:latest
 
 workflows:
   version: 2
