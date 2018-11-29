@@ -5,27 +5,33 @@
 ## Usage
 
 ```
-Usage of fcgipass:
-  -dial-fcgi <network>:<address>
-    	in format <network>:<address>, e.g. tcp:127.0.0.1:9000
-  -document-root directory
-    	directory that will be prepended to request path to be passed as SCRIPT_FILENAME
-  -listen-http address
-    	TCP address to listen on, e.g. 0.0.0.0:80
-  -script-filename SCRIPT_FILENAME
-    	passed to FastCGI process as SCRIPT_FILENAME, overrides document root
+Proxy HTTP requests to FastCGI server
+
+Usage:
+  fcgipass [flags]
+
+Flags:
+  -d, --address string           FastCGI server address.
+  -r, --document-root string     Document root will be prepended to request path to be passed as SCRIPT_FILENAME. (default "/Users/jakub/Dropbox/Projects/jakubkulhan/fcgipass")
+      --health string            Path the server won't route to backend FastCGI server, but response with 200 OK (for health checks). (default "/healthz")
+  -h, --help                     help for fcgipass
+  -b, --host string              Bind HTTP listener to this host. If not specified, listens on all interfaces.
+  -n, --network string           FastCGI server network. (default "tcp")
+  -p, --port int                 Listen for HTTP requests on this port. (default 80)
+  -f, --script-filename string   Passed to FastCGI as SCRIPT_FILENAME, overrides document root.
+  -s, --socket string            Listen for HTTP requests on this UNIX-domain socket.
 ```
 
 `fcgipass` will listen on port `8000` and route requests to FastCGI server on port `9000`:
 
 ```sh
-$ fcgipass -listen-http :8000 -dial-fcgi tcp:127.0.0.1:9000 -document-root /var/www
+$ fcgipass -p 8000 -d 127.0.0.1:9000 --document-root /var/www
 ```
 
 If all requests should be routed to the same file of FastCGI server, specify `-script-filename`:
 
 ```sh
-$ fcgipass -listen-http :8000 -dial-fcgi tcp:127.0.0.1:9000 -script-filename /var/www/index.php
+$ fcgipass -p 8000 -d 127.0.0.1:9000 --script-filename /var/www/index.php
 ```
 
 ## License
