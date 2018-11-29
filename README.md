@@ -11,9 +11,9 @@ Usage:
   fcgipass [flags]
 
 Flags:
-  -d, --address string           FastCGI server address.
-  -r, --document-root string     Document root will be prepended to request path to be passed as SCRIPT_FILENAME. (default "/Users/jakub/Dropbox/Projects/jakubkulhan/fcgipass")
-      --health string            Path the server won't route to backend FastCGI server, but response with 200 OK (for health checks). (default "/healthz")
+  -d, --address string           FastCGI server address. (default "localhost:9000")
+  -r, --document-root string     Document root will be prepended to request path to be passed as SCRIPT_FILENAME. (default ".")
+      --health string            Path the server won't route to backend FastCGI server, but respond with 200 OK instead (for health checks). (default "/healthz")
   -h, --help                     help for fcgipass
   -b, --host string              Bind HTTP listener to this host. If not specified, listens on all interfaces.
   -n, --network string           FastCGI server network. (default "tcp")
@@ -28,7 +28,7 @@ Flags:
 $ fcgipass -p 8000 -d 127.0.0.1:9000 --document-root /var/www
 ```
 
-If all requests should be routed to the same file of FastCGI server, specify `-script-filename`:
+If all requests should be routed to the same file of FastCGI server, specify `--script-filename`:
 
 ```sh
 $ fcgipass -p 8000 -d 127.0.0.1:9000 --script-filename /var/www/index.php

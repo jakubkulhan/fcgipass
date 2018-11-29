@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -71,7 +72,7 @@ func main() {
 				}
 			}()
 
-			log.Println("starting HTTP server on", l.Addr())
+			log.Println("starting HTTP server on", l.Addr(), "will dial FastCGI on", server.network, server.address)
 
 			if err := httpServer.Serve(l); err == http.ErrServerClosed {
 				return nil
@@ -81,19 +82,14 @@ func main() {
 		},
 	}
 
-	wd, err := os.Getwd()
-	if err != nil {
-		log.Fatal(err)
-	}
-
 	rootCmd.Flags().StringVarP(&server.host, "host", "b", "", "Bind HTTP listener to this host. If not specified, listens on all interfaces.")
 	rootCmd.Flags().IntVarP(&server.port, "port", "p", 80, "Listen for HTTP requests on this port.")
 	rootCmd.Flags().StringVarP(&server.socket, "socket", "s", "", "Listen for HTTP requests on this UNIX-domain socket.")
-	rootCmd.Flags().StringVarP(&server.documentRoot, "document-root", "r", wd, "Document root will be prepended to request path to be passed as SCRIPT_FILENAME.")
+	rootCmd.Flags().StringVarP(&server.documentRoot, "document-root", "r", ".", "Document root will be prepended to request path to be passed as SCRIPT_FILENAME.")
 	rootCmd.Flags().StringVarP(&server.scriptFilenameOverride, "script-filename", "f", "", "Passed to FastCGI as SCRIPT_FILENAME, overrides document root.")
-	rootCmd.Flags().StringVar(&server.healthCheckPath, "health", "/healthz", "Path the server won't route to backend FastCGI server, but response with 200 OK (for health checks).")
+	rootCmd.Flags().StringVar(&server.healthCheckPath, "health", "/healthz", "Path the server won't route to backend FastCGI server, but respond with 200 OK instead (for health checks).")
 	rootCmd.Flags().StringVarP(&server.network, "network", "n", "tcp", "FastCGI server network.")
-	rootCmd.Flags().StringVarP(&server.address, "address", "d", "", "FastCGI server address.")
+	rootCmd.Flags().StringVarP(&server.address, "address", "d", "localhost:9000", "FastCGI server address.")
 
 	if err := rootCmd.Execute(); err != nil {
 		log.Println(err)
@@ -122,6 +118,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 	scriptFilename := path.Join(s.documentRoot, request.URL.Path)
 	if s.scriptFilenameOverride != "" {
 		scriptFilename = s.scriptFilenameOverride
+	}
+
+	if absScriptFilename, err := filepath.Abs(scriptFilename); err != nil {
+		log.Println("abs failed:", err)
+		http.Error(w, "Internal Server Error", 500)
+		return
+	} else {
+		scriptFilename = absScriptFilename
 	}
 
 	remoteAddr, remotePort, _ := net.SplitHostPort(request.RemoteAddr)
