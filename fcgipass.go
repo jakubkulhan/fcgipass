@@ -1,125 +1,167 @@
 package main
 
 import (
-	"flag"
+	"context"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
+	"github.com/pkg/errors"
+	"github.com/spf13/cobra"
 	"github.com/tomasen/fcgi_client"
 )
 
-var (
-	listenHttp             = flag.String("listen-http", "", "TCP `address` to listen on, e.g. 0.0.0.0:80")
-	dialFcgi               = flag.String("dial-fcgi", "", "in format `<network>:<address>`, e.g. tcp:127.0.0.1:9000")
-	documentRoot           = flag.String("document-root", "", "`directory` that will be prepended to request path to be passed as SCRIPT_FILENAME")
-	scriptFilenameOverride = flag.String("script-filename", "", "passed to FastCGI process as `SCRIPT_FILENAME`, overrides document root")
-)
-
-var (
-	serverSoftware string
-	serverAddr     string
-	serverPort     string
-	fcgiAddr       string
-	fcgiProto      string
-)
-
-func main() {
-	flag.Parse()
-
-	if *listenHttp == "" || *dialFcgi == "" || (*scriptFilenameOverride == "" && *documentRoot == "") {
-		flag.Usage()
-		os.Exit(1)
-		return
-	}
-
-	serverSoftware = os.Args[0]
-	serverAddr = *listenHttp
-	fcgiAddr = *dialFcgi
-
-	if strings.HasPrefix(serverAddr, ":") {
-		serverPort = serverAddr[1:]
-		serverAddr = "0.0.0.0"
-	} else if parts := strings.SplitN(serverAddr, ":", 2); len(parts) == 2 {
-		serverAddr = parts[0]
-		serverPort = parts[1]
-	} else {
-		flag.Usage()
-		os.Exit(1)
-		return
-	}
-
-	if parts := strings.SplitN(fcgiAddr, ":", 2); len(parts) == 2 {
-		fcgiProto = parts[0]
-		fcgiAddr = parts[1]
-	} else {
-		flag.Usage()
-		os.Exit(1)
-		return
-	}
-
-	if err := http.ListenAndServe(serverAddr+":"+serverPort, http.HandlerFunc(serve)); err != nil {
-		log.Fatal(err)
-		os.Exit(1)
-		return
-	}
-
-	os.Exit(0)
+type Server struct {
+	host                   string
+	port                   int
+	socket                 string
+	documentRoot           string
+	scriptFilenameOverride string
+	healthCheckPath        string
+	network                string
+	address                string
 }
 
-func serve(w http.ResponseWriter, r *http.Request) {
-	client, err := fcgiclient.Dial(fcgiProto, fcgiAddr)
+func main() {
+	server := &Server{}
+
+	rootCmd := &cobra.Command{
+		Use:   os.Args[0],
+		Short: "Proxy HTTP requests to FastCGI server",
+		RunE: func(cmd *cobra.Command, args []string) (err error) {
+			if server.address == "" {
+				return errors.New("you have to pass FastCGI server address")
+			}
+
+			var l net.Listener
+			if server.socket != "" {
+				l, err = net.Listen("unix", server.socket)
+			} else {
+				l, err = net.Listen("tcp", fmt.Sprintf("%s:%d", server.host, server.port))
+			}
+			if err != nil {
+				return errors.Wrap(err, "listen failed")
+			}
+			defer l.Close()
+
+			httpServer := &http.Server{
+				Handler: server,
+			}
+
+			interrupt := make(chan os.Signal, 1)
+			signal.Notify(interrupt, syscall.SIGINT, syscall.SIGTERM)
+			go func() {
+				<-interrupt
+				log.Println("gracefully shutting down")
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				if err := httpServer.Shutdown(ctx); err != nil {
+					log.Println("graceful shutdown failed: ", err)
+				} else {
+					log.Println("shutdown complete")
+				}
+			}()
+
+			log.Println("starting HTTP server on", l.Addr())
+
+			if err := httpServer.Serve(l); err == http.ErrServerClosed {
+				return nil
+			} else {
+				return err
+			}
+		},
+	}
+
+	wd, err := os.Getwd()
 	if err != nil {
+		log.Fatal(err)
+	}
+
+	rootCmd.Flags().StringVarP(&server.host, "host", "b", "", "Bind HTTP listener to this host. If not specified, listens on all interfaces.")
+	rootCmd.Flags().IntVarP(&server.port, "port", "p", 80, "Listen for HTTP requests on this port.")
+	rootCmd.Flags().StringVarP(&server.socket, "socket", "s", "", "Listen for HTTP requests on this UNIX-domain socket.")
+	rootCmd.Flags().StringVarP(&server.documentRoot, "document-root", "r", wd, "Document root will be prepended to request path to be passed as SCRIPT_FILENAME.")
+	rootCmd.Flags().StringVarP(&server.scriptFilenameOverride, "script-filename", "f", "", "Passed to FastCGI as SCRIPT_FILENAME, overrides document root.")
+	rootCmd.Flags().StringVar(&server.healthCheckPath, "health", "/healthz", "Path the server won't route to backend FastCGI server, but response with 200 OK (for health checks).")
+	rootCmd.Flags().StringVarP(&server.network, "network", "n", "tcp", "FastCGI server network.")
+	rootCmd.Flags().StringVarP(&server.address, "address", "d", "", "FastCGI server address.")
+
+	if err := rootCmd.Execute(); err != nil {
 		log.Println(err)
-		http.Error(w, "502 Bad Gateway", 502)
+	}
+}
+
+func (s *Server) ServeHTTP(w http.ResponseWriter, request *http.Request) {
+	if s.healthCheckPath != "" && request.URL.Path == s.healthCheckPath {
+		w.WriteHeader(200)
+		if _, err := w.Write([]byte("ok\n")); err != nil {
+			log.Println("health write failed:", err)
+		}
+		return
+	}
+
+	client, err := fcgiclient.DialContext(request.Context(), s.network, s.address)
+	if err != nil {
+		log.Println("dial failed:", err)
+		http.Error(w, "Cannot dial backend", 502)
 		return
 	}
 
 	defer client.Close()
-	defer r.Body.Close()
+	defer request.Body.Close()
 
-	scriptFilename := path.Join(*documentRoot, r.URL.Path)
-	if *scriptFilenameOverride != "" {
-		scriptFilename = *scriptFilenameOverride
+	scriptFilename := path.Join(s.documentRoot, request.URL.Path)
+	if s.scriptFilenameOverride != "" {
+		scriptFilename = s.scriptFilenameOverride
 	}
 
-	remoteAddr, remotePort, _ := net.SplitHostPort(r.RemoteAddr)
-	r.URL.Path = r.URL.ResolveReference(r.URL).Path
+	remoteAddr, remotePort, _ := net.SplitHostPort(request.RemoteAddr)
+	request.URL.Path = request.URL.ResolveReference(request.URL).Path
 	env := map[string]string{
-		"CONTENT_LENGTH":  fmt.Sprintf("%d", r.ContentLength),
-		"CONTENT_TYPE":    r.Header.Get("Content-Type"),
-		"FCGI_ADDR":       fcgiAddr,
-		"FCGI_PROTOCOL":   fcgiProto,
-		"HTTP_HOST":       r.Host,
-		"PATH_INFO":       r.URL.Path,
-		"QUERY_STRING":    r.URL.Query().Encode(),
+		"CONTENT_LENGTH":  fmt.Sprintf("%d", request.ContentLength),
+		"CONTENT_TYPE":    request.Header.Get("Content-Type"),
+		"FCGI_ADDR":       s.address,
+		"FCGI_PROTOCOL":   s.network,
+		"HTTP_HOST":       request.Host,
+		"PATH_INFO":       request.URL.Path,
+		"QUERY_STRING":    request.URL.Query().Encode(),
 		"REMOTE_ADDR":     remoteAddr,
 		"REMOTE_PORT":     remotePort,
-		"REQUEST_METHOD":  r.Method,
-		"REQUEST_PATH":    r.URL.Path,
-		"REQUEST_URI":     r.URL.RequestURI(),
+		"REQUEST_METHOD":  request.Method,
+		"REQUEST_PATH":    request.URL.Path,
+		"REQUEST_URI":     request.URL.RequestURI(),
 		"SCRIPT_FILENAME": scriptFilename,
-		"SERVER_ADDR":     serverAddr,
-		"SERVER_NAME":     r.Host,
-		"SERVER_PORT":     serverPort,
-		"SERVER_PROTOCOL": r.Proto,
-		"SERVER_SOFTWARE": serverSoftware,
+		"SERVER_NAME":     request.Host,
+		"SERVER_PROTOCOL": request.Proto,
+		"SERVER_SOFTWARE": os.Args[0],
 	}
 
-	for k, v := range r.Header {
+	if s.socket == "" {
+		if s.host == "" {
+			env["SERVER_ADDR"] = request.Host
+		} else {
+			env["SERVER_ADDR"] = s.host
+		}
+		env["SERVER_PORT"] = strconv.Itoa(s.port)
+	}
+
+	for k, v := range request.Header {
 		env["HTTP_"+strings.Replace(strings.ToUpper(k), "-", "_", -1)] = strings.Join(v, ";")
 	}
 
-	response, err := client.Request(env, r.Body)
+	response, err := client.Request(env, request.Body)
 	if err != nil {
-		log.Println("err> ", err.Error())
-		http.Error(w, "Unable to fetch the response from the backend", 502)
+		log.Println("request failed:", err)
+		http.Error(w, "Unable to fetch response from backend", 502)
 		return
 	}
 
@@ -128,7 +170,6 @@ func serve(w http.ResponseWriter, r *http.Request) {
 	if response.StatusCode < 100 {
 		response.StatusCode = 200
 	}
-
 	defer response.Body.Close()
 
 	for k, v := range response.Header {
@@ -144,17 +185,17 @@ func serve(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(response.StatusCode)
 
 	var written int64
-	if r.Method != "HEAD" {
+	if request.Method != "HEAD" {
 		written, _ = io.Copy(w, response.Body)
 	}
 
 	log.Printf(
 		`"%s %s %s" %d %d "%s"`,
-		r.Method,
-		r.URL.Path,
-		r.Proto,
+		request.Method,
+		request.URL.Path,
+		request.Proto,
 		response.StatusCode,
 		written,
-		r.Header.Get("User-Agent"),
+		request.Header.Get("User-Agent"),
 	)
 }

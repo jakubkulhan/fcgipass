@@ -1,8 +1,9 @@
-FROM golang:1.9
-COPY fcgipass.go .
-RUN go get -d -v github.com/tomasen/fcgi_client
-RUN CGO_ENABLED=0 GOOS=linux go build -a -ldflags '-extldflags "-static"' -o fcgipass
+FROM golang:1.11
+COPY . /src
+RUN set -ex \
+    && cd /src \
+    && CGO_ENABLED=0 GOOS=linux go build -a -ldflags '-extldflags "-static"' -o /bin/fcgipass
 
 FROM scratch
-COPY --from=0 /go/fcgipass /fcgipass
+COPY --from=0 /bin/fcgipass /fcgipass
 ENTRYPOINT ["/fcgipass"]
